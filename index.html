@@ -120,6 +120,8 @@ hr{border:0;border-top:1px solid var(--line);margin:0;width:100%}
     <button class="btn" id="reroll" title="Same layout, new trees, stones and texture details">New details</button>
     <div class="spacer"></div>
     <button class="btn" id="mapBtn">Map size</button>
+    <span class="msg" id="sendMsg" aria-live="polite" hidden></span>
+    <button class="btn primary" id="sendBtn" hidden disabled title="Put this map on the battle map in DnDocs (grid, walls and doors included)">Send to DnDocs</button>
     <button class="btn primary" id="exportBtn">Export</button>
   </header>
 
@@ -151,6 +153,8 @@ hr{border:0;border-top:1px solid var(--line);margin:0;width:100%}
       <h3>Export <button class="x" data-close aria-label="Close">×</button></h3>
       <div class="field"><span class="lbl">Pixels per square</span>
         <select id="ppsq"><option value="70">70 px · Roll20</option><option value="100" selected>100 px · Foundry, Owlbear</option><option value="140">140 px · sharp</option><option value="200">200 px · print-ready</option></select></div>
+      <div class="field"><span class="lbl">Image format</span>
+        <select id="expFmt"><option value="image/png" selected>PNG · works everywhere</option><option value="image/webp">WebP · about 10× smaller</option></select></div>
       <label class="row"><input type="checkbox" id="expGrid"> Bake grid lines into the image</label>
       <p class="msg" id="expInfo"></p>
       <button class="btn primary" id="doExport">Export PNG</button>
@@ -176,6 +180,12 @@ hr{border:0;border-top:1px solid var(--line);margin:0;width:100%}
   </main>
 </div>
 <script>
+// Opened from DnDocs ("Make a map" / "Edit in Battlemap Forge"): a "Send to DnDocs" button, and
+// its own autosave slot so a DnDocs map never overwrites the map you're working on standalone.
+const EMBED = new URLSearchParams(location.search).get('embed') === 'dndocs' && window.parent !== window;
+const SAVE_KEY = EMBED ? 'bmforge.dndocs.v1' : 'bmforge.v1';
+// Can this browser write WebP (much smaller exports)? Safari can't: it gets PNG.
+const WEBP_OK=(()=>{ try{ const c=document.createElement('canvas'); c.width=c.height=1; return c.toDataURL('image/webp').startsWith('data:image/webp'); }catch(e){ return false; } })();
 // ================= Battlemap Forge engine v2 =================
 // Painted layers live in label grids at R samples per 5-ft square (terrain, trees, elevation)
 // or per square (dungeon floor). Rendering is a per-pixel pass (albedo + height + emission),
@@ -1618,7 +1628,7 @@ function undo(){ if(!undoS.length) return; redoS.push(snap()); const s=undoS.pop
 function redo(){ if(!redoS.length) return; undoS.push(snap()); const s=redoS.pop(), rz=s.W!==M.W||s.H!==M.H; restore(s); afterBig(rz); updUndo(); }
 function updUndo(){ $('undo').disabled=!undoS.length; $('redo').disabled=!redoS.length; }
 let saveT=0;
-function autosave(){ clearTimeout(saveT); saveT=setTimeout(()=>{ try{ localStorage.setItem('bmforge.v1',JSON.stringify(serialize())); }catch(e){} },700); }
+function autosave(){ clearTimeout(saveT); saveT=setTimeout(()=>{ try{ localStorage.setItem(SAVE_KEY,JSON.stringify(serialize())); }catch(e){} },700); }
 
 // ---------- rendering control ----------
 let fullTok=0, dirty=null, rafPending=false;
@@ -2076,8 +2086,10 @@ document.querySelectorAll('[data-close]').forEach(b=>b.onclick=closePops);
 $('exportBtn').onclick=()=>{ const h=$('exportPop').hidden; closePops(); $('exportPop').hidden=!h; expInfo(); };
 $('mapBtn').onclick=()=>{ const h=$('mapPop').hidden; closePops(); $('mapPop').hidden=!h; $('mw').value=M.W; $('mh').value=M.H; };
 $('mfill').innerHTML=TER.map(t=>`<option value="${t.id}">${t.name}</option>`).join('');
-function expInfo(){ const p=+$('ppsq').value; $('expInfo').textContent=`${M.W*p} × ${M.H*p} px image. Set the grid size in your VTT to ${p} px.`; }
+function expInfo(){ const p=+$('ppsq').value; $('expInfo').textContent=`${M.W*p} × ${M.H*p} px image. Set the grid size in your VTT to ${p} px.`+($('expFmt').value==='image/webp'?' WebP files are far smaller; if a VTT won’t read one, use PNG.':''); }
 $('ppsq').onchange=expInfo;
+$('expFmt').onchange=()=>{ $('doExport').textContent=$('expFmt').value==='image/webp'?'Export WebP':'Export PNG'; expInfo(); };
+if(!WEBP_OK) $('expFmt').querySelector('option[value="image/webp"]').remove();
 $('applySize').onclick=()=>{
   const W=Math.max(6,Math.min(60,+$('mw').value|0)), H=Math.max(6,Math.min(60,+$('mh').value|0)); if(W===M.W&&H===M.H) return;
   pushUndo(); const oT=M.terrain, oTr=M.trees, oE=M.elev, oD=M.dung, oNW=NW, oNH=NH, oW=M.W, oH=M.H, fill=+$('mfill').value;
@@ -2101,25 +2113,27 @@ async function offer(filename,data,okMsg){
   try{ const blob=data instanceof Blob?data:new Blob([data],{type:'application/octet-stream'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),60000); msg.textContent=okMsg; return 'anchor'; }
   catch(e){ return 'failed'; }
 }
-async function renderExport(p,grid,msg){
+async function renderExport(p,grid,msg,type='image/png'){
   const Wp=M.W*p, Hp=M.H*p; if(Wp*Hp>60e6){ msg.classList.add('err'); msg.textContent='That image would be too large for the browser. Pick fewer pixels per square or a smaller map.'; return null; }
   const c=document.createElement('canvas'); c.width=Wp; c.height=Hp; const ctx=c.getContext('2d');
   applyStyle(); prepare(); const band=Math.max(128,Math.round(p*2));
   for(let y=0;y<Hp;y+=band){ renderRegion(ctx,p,0,y,Wp,Math.min(Hp,y+band),{grid}); msg.textContent=`Rendering… ${Math.round(100*Math.min(1,(y+band)/Hp))}%`; await new Promise(r=>setTimeout(r,0)); }
-  return await new Promise(r=>c.toBlob(r,'image/png'));
+  // Browsers that can't write WebP hand back a PNG instead (blob.type says which).
+  return await new Promise(r=>c.toBlob(r,type,type==='image/webp'?0.85:undefined));
 }
+const extOf=b=>b&&b.type==='image/webp'?'webp':'png';
 function showPreview(blob){ const pv=$('expPreview'); pv.hidden=false; pv.innerHTML=''; const img=new Image(); img.src=URL.createObjectURL(blob); img.alt='Exported battle map'; pv.append(img); }
 $('doExport').onclick=async()=>{
   const p=+$('ppsq').value, msg=$('expMsg'), btn=$('doExport'); msg.classList.remove('err'); btn.disabled=true;
-  const blob=await renderExport(p,$('expGrid').checked,msg); if(!blob){ btn.disabled=false; return; }
-  const name=`battlemap-${M.W}x${M.H}-${p}px-${stamp()}.png`;
+  const blob=await renderExport(p,$('expGrid').checked,msg,$('expFmt').value); if(!blob){ btn.disabled=false; return; }
+  const name=`battlemap-${M.W}x${M.H}-${p}px-${stamp()}.${extOf(blob)}`;
   const res=await offer(name,blob,`Saved ${name}. Grid size: ${p} px.`);
   if(res==='failed'||res==='anchor'){ showPreview(blob); if(res==='failed') msg.textContent='Downloads aren’t available in this view. Right-click the image below and choose “Save image as…”.'; }
   btn.disabled=false;
 };
 $('doVTT').onclick=async()=>{
   const p=+$('ppsq').value, msg=$('expMsg'), btn=$('doVTT'); msg.classList.remove('err'); btn.disabled=true;
-  const blob=await renderExport(p,false,msg); if(!blob){ btn.disabled=false; return; }
+  const blob=await renderExport(p,false,msg,$('expFmt').value); if(!blob){ btn.disabled=false; return; }
   msg.textContent='Packing walls, doors and lights…';
   const b64=await new Promise(r=>{ const fr=new FileReader(); fr.onload=()=>r(String(fr.result).split(',')[1]); fr.readAsDataURL(blob); });
   const data=JSON.stringify(buildUVTT(p,b64)); const base=`battlemap-${M.W}x${M.H}-${stamp()}`;
@@ -2132,11 +2146,54 @@ $('saveMap').onclick=async()=>{ const s=JSON.stringify(serialize()); const res=a
 $('openMap').onclick=()=>$('openFile').click();
 $('openFile').onchange=e=>{ const f=e.target.files[0]; if(!f) return; const rd=new FileReader(); rd.onload=()=>{ try{ const d=JSON.parse(rd.result); pushUndo(); deserialize(d); afterBig(true); $('expMsg').classList.remove('err'); $('expMsg').textContent=`Opened ${f.name}.`; }catch(err){ $('expMsg').classList.add('err'); $('expMsg').textContent='That file isn’t a Battlemap Forge map.'; } }; rd.readAsText(f); e.target.value=''; };
 
+// ---------- DnDocs ----------
+// Talks only to the DnDocs page that opened it: the same site, or a local development copy.
+if(EMBED){
+  let parentOrigin=null;
+  const okParent=o=>o===location.origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o);
+  const sendBtn=$('sendBtn'), sendMsg=$('sendMsg');
+  sendBtn.hidden=false; sendMsg.hidden=false;
+  document.querySelector('.brand').textContent='Battlemap Forge · DnDocs';
+  const say=(t,err)=>{ sendMsg.textContent=t; sendMsg.classList.toggle('err',!!err); };
+  window.addEventListener('message',e=>{
+    if(e.source!==window.parent || !okParent(e.origin)) return;
+    const d=e.data||{};
+    if(d.type==='dndocs:hello'){
+      parentOrigin=e.origin; sendBtn.disabled=false;
+      if(d.map){
+        try{ pushUndo(); deserialize(typeof d.map==='string'?JSON.parse(d.map):d.map); afterBig(true); say(`Editing ${d.name||'the battle map'}`); }
+        catch(err){ say('That map couldn’t be opened; starting from your last one.',true); }
+      } else if(d.fresh){
+        // A new map: start from a ready-made one and offer the scene generator.
+        pushUndo(); TRN=Math.random; TEMPLATES.blank.build(); afterBig(true); say(d.name?`New map for ${d.name}`:'New map');
+        setTimeout(()=>$('genBtn').click(),150);
+      }
+    } else if(d.type==='dndocs:received'){
+      sendBtn.disabled=false;
+      say(d.ok?'Sent. You can keep editing and send again.':`DnDocs couldn’t use it: ${d.error||'unknown error'}`,!d.ok);
+    }
+  });
+  sendBtn.onclick=async()=>{
+    if(!parentOrigin) return;
+    sendBtn.disabled=true;
+    const msg={ get textContent(){ return sendMsg.textContent; }, set textContent(t){ say(t); }, classList:sendMsg.classList };
+    // DnDocs keeps battle maps at up to 2400 px: render about that size, as WebP (small and quick).
+    const p=Math.max(30,Math.min(100,Math.floor(2400/Math.max(M.W,M.H))));
+    const blob=await renderExport(p,false,msg,'image/webp');
+    if(!blob){ sendBtn.disabled=false; return; }
+    say('Sending to DnDocs…');
+    const b64=await new Promise(r=>{ const fr=new FileReader(); fr.onload=()=>r(String(fr.result).split(',')[1]); fr.readAsDataURL(blob); });
+    window.parent.postMessage({type:'forge:send', uvtt:buildUVTT(p,b64), map:serialize()}, parentOrigin);
+  };
+  // DnDocs answers with dndocs:hello (and the map to edit, if any).
+  window.parent.postMessage({type:'forge:ready'},'*');
+}
+
 // ---------- boot ----------
 (function boot(){
   setSeed(7);
   let loaded=false;
-  try{ const s=localStorage.getItem('bmforge.v1'); if(s){ deserialize(JSON.parse(s)); loaded=true; } }catch(e){ loaded=false; }
+  try{ const s=localStorage.getItem(SAVE_KEY); if(s){ deserialize(JSON.parse(s)); loaded=true; } }catch(e){ loaded=false; }
   try{ const g=localStorage.getItem('bmforge.gen'); if(g) Object.assign(UI.gen,JSON.parse(g)); }catch(e){}
   if(!loaded){ TRN=rng(1); TEMPLATES.river.build(); M.style='paint'; }
   buildTools(); buildOpts(); syncTop(); updUndo(); sizeCanvases();
