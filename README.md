@@ -23,6 +23,14 @@ Double-click `index.html`. It opens in your browser and works offline. Your curr
 
 To update the tool later, replace `index.html` and push (or upload) again; the site redeploys on its own.
 
+## Furniture and interiors
+
+**Props** has about 85 pieces in categories (living room, bedroom & bath, kitchen & dining, study & library, hall & mansion, workshop & temple, doors/stairs/light, outdoors) and a search box. Furniture that belongs against a wall (beds, wardrobes, shelves, counters, fireplaces…) turns and snaps onto the nearest wall when you click near one; hold **Shift** to place it freely. Doors, windows and wall torches sit in the wall. Candles, candelabras, chandeliers, stoves and fireplaces light the room.
+
+**New scene → Interiors** has a **House**, a **Mansion** (a dozen or more rooms: hall, library, dining hall, ballroom, gallery, music room, bedrooms, kitchen, chapel, servants' quarters…) and a **Grand library** (stacks either side of a long nave, reading nooks, an archive and a study). Each is laid out with walls, doors, windows, floors and furniture; every reroll is a different plan. Taking the roof off a house (Buildings → Open / close roof) furnishes it the same way.
+
+New floors under **Ground**: marble tiles, parquet and carpet (also in a building's Floor choice).
+
 ## Moving maps between copies
 
 Each copy (the one in Claude, a double-clicked file, the GitHub Pages site) keeps its own autosave and stamps. Use **Export → Save map file** in one and **Open map file** in another to move a map.
