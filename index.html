@@ -88,6 +88,7 @@ h3{margin:0;font-family:var(--f-display);font-weight:400;font-size:18px}
 .field input[type=number]{width:72px;border:1px solid var(--line);background:var(--chip);border-radius:6px;padding:4px 6px}
 .msg{font-size:13px;line-height:1.4;margin:0;color:var(--muted)}
 .msg.err{color:#b4442c}
+.savewarn{font:inherit;font-size:12px;color:#fff;background:#b4442c;border:0;border-radius:6px;padding:3px 8px;cursor:pointer}
 .preview img{max-width:100%;border-radius:6px;border:1px solid var(--line)}
 hr{border:0;border-top:1px solid var(--line);margin:0;width:100%}
 @media (max-width:760px){
@@ -135,6 +136,7 @@ hr{border:0;border-top:1px solid var(--line);margin:0;width:100%}
     <div class="scroller" id="scroller"><div class="board" id="board"><canvas id="map"></canvas><canvas id="ui"></canvas></div></div>
     <div class="status">
       <span id="dims"></span>
+      <button type="button" class="savewarn" id="saveWarn" hidden title="Too big to keep in this browser">⚠ Not kept in the browser — use <b>Save map file</b></button>
       <span class="busy" id="busy" hidden>Rendering <i><b id="bar"></b></i></span>
       <span class="spacer"></span>
       <label class="row"><input type="checkbox" id="gridT" checked> Grid</label>
@@ -169,8 +171,8 @@ hr{border:0;border-top:1px solid var(--line);margin:0;width:100%}
 
     <div class="pop" id="mapPop" hidden>
       <h3>Map size <button class="x" data-close aria-label="Close">×</button></h3>
-      <div class="row"><label class="field"><span class="lbl">Width</span><input type="number" id="mw" min="6" max="60"></label>
-        <label class="field"><span class="lbl">Height</span><input type="number" id="mh" min="6" max="60"></label><span class="msg" style="align-self:flex-end">squares</span></div>
+      <div class="row"><label class="field"><span class="lbl">Width</span><input type="number" id="mw" min="6" max="150"></label>
+        <label class="field"><span class="lbl">Height</span><input type="number" id="mh" min="6" max="150"></label><span class="msg" style="align-self:flex-end">squares</span></div>
       <p class="msg">One square is 5 ft. Growing the map adds ground on the right and bottom; shrinking crops from there.</p>
       <div class="row"><span class="lbl">Fill new area with</span><select id="mfill"></select></div>
       <button class="btn primary" id="applySize">Apply size</button>
@@ -191,6 +193,8 @@ const WEBP_OK=(()=>{ try{ const c=document.createElement('canvas'); c.width=c.he
 // or per square (dungeon floor). Rendering is a per-pixel pass (albedo + height + emission),
 // then a lighting pass (normals from height, AO, cast shadows, cliff shadows, mood, fog).
 const R = 8, LH = 1.2, CW = 0.7;
+/** Largest map the Map size box makes (squares per side). Bigger map files still open and keep their size. */
+const MAX_SIDE = 150;
 const TER = [
   {id:0, name:'Grass'}, {id:1, name:'Forest floor'}, {id:2, name:'Dirt'}, {id:3, name:'Road'},
   {id:4, name:'Sand'}, {id:5, name:'Mud'}, {id:6, name:'Rock'}, {id:7, name:'Cobblestone'},
@@ -1623,17 +1627,23 @@ function deserialize(d){
 function snap(){ return {W:M.W,H:M.H,t:M.terrain.slice(),tr:M.trees.slice(),e:M.elev.slice(),d:M.dung.slice(),o:JSON.stringify([M.buildings,M.walls,M.props]),n:M.nextId,seed:M.seed,sl:M.slopes}; }
 function restore(s){ if(s.W!==M.W||s.H!==M.H) allocMap(s.W,s.H); M.terrain=s.t.slice(); M.trees=s.tr.slice(); M.elev=s.e.slice(); M.dung=s.d.slice();
   const o=JSON.parse(s.o); M.buildings=o[0]; M.walls=o[1]; M.props=o[2]; if(s.sl) M.slopes=s.sl; M.nextId=s.n; setSeed(s.seed); UI.sel=[]; }
-function pushUndo(){ undoS.push(snap()); if(undoS.length>40) undoS.shift(); redoS=[]; updUndo(); }
+// Each undo step is a full copy of the map (about 200 bytes per square): big maps keep fewer steps.
+function undoDepth(){ return Math.max(5,Math.min(40,Math.floor(120e6/(M.W*M.H*R*R*3)))); }
+function pushUndo(){ undoS.push(snap()); while(undoS.length>undoDepth()) undoS.shift(); redoS=[]; updUndo(); }
 function undo(){ if(!undoS.length) return; redoS.push(snap()); const s=undoS.pop(), rz=s.W!==M.W||s.H!==M.H; restore(s); afterBig(rz); updUndo(); }
 function redo(){ if(!redoS.length) return; undoS.push(snap()); const s=redoS.pop(), rz=s.W!==M.W||s.H!==M.H; restore(s); afterBig(rz); updUndo(); }
 function updUndo(){ $('undo').disabled=!undoS.length; $('redo').disabled=!redoS.length; }
 let saveT=0;
-function autosave(){ clearTimeout(saveT); saveT=setTimeout(()=>{ try{ localStorage.setItem(SAVE_KEY,JSON.stringify(serialize())); }catch(e){} },700); }
+function autosave(){ clearTimeout(saveT); saveT=setTimeout(()=>{
+  // Browsers keep about 5 MB per site: a big, busy map may not fit. Say so instead of failing quietly.
+  let ok=true; try{ localStorage.setItem(SAVE_KEY,JSON.stringify(serialize())); }catch(e){ ok=false; try{ localStorage.removeItem(SAVE_KEY); }catch(_){} }
+  $('saveWarn').hidden=ok;
+},700); }
 
 // ---------- rendering control ----------
 let fullTok=0, dirty=null, rafPending=false;
 function sizeCanvases(){
-  UI.P=Math.max(16,Math.min(44,Math.round(1300/Math.max(M.W,M.H))));
+  UI.P=Math.min(Math.max(16,Math.min(44,Math.round(1300/Math.max(M.W,M.H)))), Math.max(4,Math.floor(Math.sqrt(16e6/(M.W*M.H)))));
   mapC.width=uiC.width=M.W*UI.P; mapC.height=uiC.height=M.H*UI.P; applyZoom();
   $('dims').textContent=`${M.W} × ${M.H} squares · ${M.W*5} × ${M.H*5} ft`;
 }
@@ -2084,14 +2094,16 @@ $('genSurprise').onclick=()=>{ const pick=a=>a[Math.floor(Math.random()*a.length
 function closePops(){ $('exportPop').hidden=true; $('mapPop').hidden=true; $('genPop').hidden=true; }
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=closePops);
 $('exportBtn').onclick=()=>{ const h=$('exportPop').hidden; closePops(); $('exportPop').hidden=!h; expInfo(); };
-$('mapBtn').onclick=()=>{ const h=$('mapPop').hidden; closePops(); $('mapPop').hidden=!h; $('mw').value=M.W; $('mh').value=M.H; };
+$('mapBtn').onclick=()=>{ const h=$('mapPop').hidden; closePops(); $('mapPop').hidden=!h; $('mw').value=M.W; $('mh').value=M.H; $('mw').max=Math.max(MAX_SIDE,M.W); $('mh').max=Math.max(MAX_SIDE,M.H); };
 $('mfill').innerHTML=TER.map(t=>`<option value="${t.id}">${t.name}</option>`).join('');
 function expInfo(){ const p=+$('ppsq').value; $('expInfo').textContent=`${M.W*p} × ${M.H*p} px image. Set the grid size in your VTT to ${p} px.`+($('expFmt').value==='image/webp'?' WebP files are far smaller; if a VTT won’t read one, use PNG.':''); }
 $('ppsq').onchange=expInfo;
 $('expFmt').onchange=()=>{ $('doExport').textContent=$('expFmt').value==='image/webp'?'Export WebP':'Export PNG'; expInfo(); };
 if(!WEBP_OK) $('expFmt').querySelector('option[value="image/webp"]').remove();
 $('applySize').onclick=()=>{
-  const W=Math.max(6,Math.min(60,+$('mw').value|0)), H=Math.max(6,Math.min(60,+$('mh').value|0)); if(W===M.W&&H===M.H) return;
+  // Up to MAX_SIDE squares; a bigger map opened from a file may keep its size, but is never cut down unasked.
+  const W=Math.max(6,Math.min(Math.max(MAX_SIDE,M.W),+$('mw').value|0)), H=Math.max(6,Math.min(Math.max(MAX_SIDE,M.H),+$('mh').value|0)); if(W===M.W&&H===M.H) return closePops();
+  if((W<M.W||H<M.H) && !confirm(`Shrink the map to ${W} × ${H}? Everything beyond that is cut off (Undo brings it back).`)) return;
   pushUndo(); const oT=M.terrain, oTr=M.trees, oE=M.elev, oD=M.dung, oNW=NW, oNH=NH, oW=M.W, oH=M.H, fill=+$('mfill').value;
   allocMap(W,H); M.terrain.fill(fill);
   for(let y=0;y<Math.min(oNH,NH);y++) for(let x=0;x<Math.min(oNW,NW);x++){ M.terrain[y*NW+x]=oT[y*oNW+x]; M.trees[y*NW+x]=oTr[y*oNW+x]; M.elev[y*NW+x]=oE[y*oNW+x]; }
@@ -2113,37 +2125,53 @@ async function offer(filename,data,okMsg){
   try{ const blob=data instanceof Blob?data:new Blob([data],{type:'application/octet-stream'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),60000); msg.textContent=okMsg; return 'anchor'; }
   catch(e){ return 'failed'; }
 }
-async function renderExport(p,grid,msg,type='image/png'){
-  const Wp=M.W*p, Hp=M.H*p; if(Wp*Hp>60e6){ msg.classList.add('err'); msg.textContent='That image would be too large for the browser. Pick fewer pixels per square or a smaller map.'; return null; }
-  const c=document.createElement('canvas'); c.width=Wp; c.height=Hp; const ctx=c.getContext('2d');
-  applyStyle(); prepare(); const band=Math.max(128,Math.round(p*2));
-  for(let y=0;y<Hp;y+=band){ renderRegion(ctx,p,0,y,Wp,Math.min(Hp,y+band),{grid}); msg.textContent=`Rendering… ${Math.round(100*Math.min(1,(y+band)/Hp))}%`; await new Promise(r=>setTimeout(r,0)); }
-  // Browsers that can't write WebP hand back a PNG instead (blob.type says which).
-  return await new Promise(r=>c.toBlob(r,type,type==='image/webp'?0.85:undefined));
+// Browsers refuse canvases past ~16k px a side or a few dozen megapixels (less on iPad/iPhone).
+const EXP_SIDE=16384, EXP_AREA=60e6;
+function fitPx(p){ return Math.max(1,Math.min(p,Math.floor(Math.min(EXP_SIDE/Math.max(M.W,M.H),Math.sqrt(EXP_AREA/(M.W*M.H)))))); }
+/** Render the map as an image at up to `want` px per square: the largest that fits this browser. Returns {blob, p}. */
+async function renderExport(want,grid,msg,type='image/png'){
+  let p=fitPx(want);
+  applyStyle(); prepare();
+  while(p>=4){
+    const Wp=M.W*p, Hp=M.H*p; const c=document.createElement('canvas'); c.width=Wp; c.height=Hp; const ctx=c.getContext('2d');
+    let blob=null;
+    if(ctx && c.width===Wp){
+      const band=Math.max(128,Math.round(p*2));
+      for(let y=0;y<Hp;y+=band){ renderRegion(ctx,p,0,y,Wp,Math.min(Hp,y+band),{grid}); msg.textContent=`Rendering at ${p} px per square… ${Math.round(100*Math.min(1,(y+band)/Hp))}%`; await new Promise(r=>setTimeout(r,0)); }
+      // Browsers that can't write WebP hand back a PNG instead (blob.type says which).
+      blob=await new Promise(r=>c.toBlob(r,type,type==='image/webp'?0.85:undefined));
+    }
+    c.width=c.height=0;
+    if(blob) return {blob,p};
+    p=Math.floor(p*0.7); // this browser couldn't make one that big: try smaller
+  }
+  msg.classList.add('err'); msg.textContent='This browser can’t make an image of a map this size. Try a desktop browser, or a smaller map.'; return null;
 }
+const lowered=(r,want)=>r.p<want?` (${want} px would be too large for the browser, so ${r.p} px was used)`:'';
 const extOf=b=>b&&b.type==='image/webp'?'webp':'png';
 function showPreview(blob){ const pv=$('expPreview'); pv.hidden=false; pv.innerHTML=''; const img=new Image(); img.src=URL.createObjectURL(blob); img.alt='Exported battle map'; pv.append(img); }
 $('doExport').onclick=async()=>{
   const p=+$('ppsq').value, msg=$('expMsg'), btn=$('doExport'); msg.classList.remove('err'); btn.disabled=true;
-  const blob=await renderExport(p,$('expGrid').checked,msg,$('expFmt').value); if(!blob){ btn.disabled=false; return; }
-  const name=`battlemap-${M.W}x${M.H}-${p}px-${stamp()}.${extOf(blob)}`;
-  const res=await offer(name,blob,`Saved ${name}. Grid size: ${p} px.`);
+  const r=await renderExport(p,$('expGrid').checked,msg,$('expFmt').value); if(!r){ btn.disabled=false; return; }
+  const blob=r.blob, name=`battlemap-${M.W}x${M.H}-${r.p}px-${stamp()}.${extOf(blob)}`;
+  const res=await offer(name,blob,`Saved ${name}. Grid size: ${r.p} px${lowered(r,p)}.`);
   if(res==='failed'||res==='anchor'){ showPreview(blob); if(res==='failed') msg.textContent='Downloads aren’t available in this view. Right-click the image below and choose “Save image as…”.'; }
   btn.disabled=false;
 };
 $('doVTT').onclick=async()=>{
   const p=+$('ppsq').value, msg=$('expMsg'), btn=$('doVTT'); msg.classList.remove('err'); btn.disabled=true;
-  const blob=await renderExport(p,false,msg,$('expFmt').value); if(!blob){ btn.disabled=false; return; }
+  const r=await renderExport(p,false,msg,$('expFmt').value); if(!r){ btn.disabled=false; return; }
   msg.textContent='Packing walls, doors and lights…';
-  const b64=await new Promise(r=>{ const fr=new FileReader(); fr.onload=()=>r(String(fr.result).split(',')[1]); fr.readAsDataURL(blob); });
-  const data=JSON.stringify(buildUVTT(p,b64)); const base=`battlemap-${M.W}x${M.H}-${stamp()}`;
+  const b64=await new Promise(res=>{ const fr=new FileReader(); fr.onload=()=>res(String(fr.result).split(',')[1]); fr.readAsDataURL(r.blob); });
+  const data=JSON.stringify(buildUVTT(r.p,b64)); const base=`battlemap-${M.W}x${M.H}-${stamp()}`;
   const fname=DL?base+'.dd2vtt.json':base+'.dd2vtt';
-  const res=await offer(fname,data,DL?`Saved ${fname}. If your importer asks for .dd2vtt, rename it to end in .dd2vtt.`:`Saved ${fname}.`);
+  const res=await offer(fname,data,(DL?`Saved ${fname}. If your importer asks for .dd2vtt, rename it to end in .dd2vtt.`:`Saved ${fname}.`)+(r.p<p?` Grid size: ${r.p} px${lowered(r,p)}.`:''));
   if(res==='failed'){ msg.classList.add('err'); msg.textContent='Saving files isn’t available in this view.'; }
   btn.disabled=false;
 };
 $('saveMap').onclick=async()=>{ const s=JSON.stringify(serialize()); const res=await offer(`battlemap-${stamp()}.json`,s,'Map file saved. Open it here later to keep editing.'); if(res==='failed'){ $('expMsg').classList.add('err'); $('expMsg').textContent='Saving files isn’t available in this view. Your map is still kept in this browser automatically.'; } };
 $('openMap').onclick=()=>$('openFile').click();
+$('saveWarn').onclick=()=>$('saveMap').click();
 $('openFile').onchange=e=>{ const f=e.target.files[0]; if(!f) return; const rd=new FileReader(); rd.onload=()=>{ try{ const d=JSON.parse(rd.result); pushUndo(); deserialize(d); afterBig(true); $('expMsg').classList.remove('err'); $('expMsg').textContent=`Opened ${f.name}.`; }catch(err){ $('expMsg').classList.add('err'); $('expMsg').textContent='That file isn’t a Battlemap Forge map.'; } }; rd.readAsText(f); e.target.value=''; };
 
 // ---------- DnDocs ----------
@@ -2178,12 +2206,13 @@ if(EMBED){
     sendBtn.disabled=true;
     const msg={ get textContent(){ return sendMsg.textContent; }, set textContent(t){ say(t); }, classList:sendMsg.classList };
     // DnDocs keeps battle maps at up to 2400 px: render about that size, as WebP (small and quick).
-    const p=Math.max(30,Math.min(100,Math.floor(2400/Math.max(M.W,M.H))));
-    const blob=await renderExport(p,false,msg,'image/webp');
-    if(!blob){ sendBtn.disabled=false; return; }
+    // (Big area maps get small squares: DnDocs shrinks anything larger to 2400 px anyway.)
+    const p=Math.max(8,Math.min(100,Math.floor(2400/Math.max(M.W,M.H))));
+    const r=await renderExport(p,false,msg,'image/webp');
+    if(!r){ sendBtn.disabled=false; return; }
     say('Sending to DnDocs…');
-    const b64=await new Promise(r=>{ const fr=new FileReader(); fr.onload=()=>r(String(fr.result).split(',')[1]); fr.readAsDataURL(blob); });
-    window.parent.postMessage({type:'forge:send', uvtt:buildUVTT(p,b64), map:serialize()}, parentOrigin);
+    const b64=await new Promise(res=>{ const fr=new FileReader(); fr.onload=()=>res(String(fr.result).split(',')[1]); fr.readAsDataURL(r.blob); });
+    window.parent.postMessage({type:'forge:send', uvtt:buildUVTT(r.p,b64), map:serialize()}, parentOrigin);
   };
   // DnDocs answers with dndocs:hello (and the map to edit, if any).
   window.parent.postMessage({type:'forge:ready'},'*');

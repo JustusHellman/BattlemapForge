@@ -27,6 +27,15 @@ To update the tool later, replace `index.html` and push (or upload) again; the s
 
 Each copy (the one in Claude, a double-clicked file, the GitHub Pages site) keeps its own autosave and stamps. Use **Export → Save map file** in one and **Open map file** in another to move a map.
 
+## Big maps
+
+**Map size** goes up to 150 × 150 squares. A bigger map file (say a 320 × 320 region made with a modified copy) still opens and keeps its size; the Map size box never cuts a map down unless you make it smaller yourself, and then it asks first.
+
+- **Export** uses the pixels per square you pick, or the largest that still fits in the browser (it says when it had to go lower).
+- **Autosave** keeps a map in the browser, which holds about 5 MB. If a map is too big for that, a red *Not kept in the browser* note appears; click it (or **Save map file**) to keep your work.
+- **Undo** keeps 40 steps on normal maps and fewer on very big ones (each step is a full copy of the map).
+- **Send to DnDocs** works at any size; DnDocs keeps maps at up to 2400 px, so a huge map's squares are small there.
+
 ## VTT export
 
 **Export → Export for VTT** writes a Universal VTT file (`.dd2vtt`) with the map image plus walls, doors and lights. In Foundry VTT, import it with the *Universal Battlemap Importer* module.
